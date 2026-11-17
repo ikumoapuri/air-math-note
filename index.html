@@ -1,0 +1,223 @@
+
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Air Math Note</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#121e30;color:#fff;font:14px system-ui}
+header{position:sticky;top:0;background:#1e304a;padding:12px;z-index:3}
+header textarea{display:block;width:100%;height:65px;font:17px system-ui}
+main{padding:10px}
+button{margin:3px 2px;padding:10px;border:0;border-radius:9px;background:#36649e;color:#fff}
+input{width:100%}
+#desk{display:flex;gap:8px;height:55vh;min-height:270px}
+#hold{width:76px;flex:none;border:2px solid #8697aa;border-radius:12px;display:grid;place-items:center;text-align:center;touch-action:none;user-select:none;background:#34435c}
+#hold.on{background:#16875b}
+#paper{position:relative;flex:1;min-width:0;border-radius:10px;overflow:hidden;background:#fff;background-image:linear-gradient(#e9edf3 1px,transparent 1px),linear-gradient(90deg,#e9edf3 1px,transparent 1px);background-size:22px 22px}
+canvas{height:100%;width:100%;touch-action:none}
+#dot{position:absolute;width:12px;height:12px;border:2px solid #e58a1d;border-radius:100%;pointer-events:none;display:none;transform:translate(-50%,-50%)}
+video{width:90px;height:70px;object-fit:cover;transform:scaleX(-1);background:#000}
+#status{margin:10px 0;color:#c9dcf6;min-height:36px}
+small{color:#cad8ee}
+</style>
+<header><b>Air Math Note</b><textarea id="question">y = −x² + 4x + 5
+0 ≦ x ≦ 5 の最大値・最小値を求めよ。</textarea></header>
+<main>
+<button id="camera">インカメ開始</button>
+<button id="undo">戻す</button>
+<button id="clear">消去</button>
+<button id="save">保存</button>
+<div style="display:flex;gap:10px;align-items:center">
+<video id="video" muted autoplay playsinline></video>
+<label style="flex:1">空中の動きを縮小 <span id="percent">35%</span>
+<input id="scale" type="range" min="10" max="100" step="5" value="35"></label>
+</div>
+<div id="desk">
+<div id="hold">左指で<br>押さえる<br><small>ロック中</small></div>
+<div id="paper"><canvas id="canvas"></canvas><div id="dot"></div></div>
+</div>
+<div id="status">左指を押さえながら右指で書けます。カメラを開始すると空中でも書けます。</div>
+<small>空中では親指と人差し指をつまんで書き、離して筆を上げます。左指を離して白いノートをタップすると、空中筆記の開始位置を移動できます。</small>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id),c=$('canvas'),ctx=c.getContext('2d'),v=$('video');
+let lines=[],touch=null,air=null,left=null,right=null,anchor={x:.25,y:.25};
+let stream=null,hand=null,live=false,frame=0,lastVideo=-1,pinched=false,begin=null,filtered=null;
+const clamp=x=>Math.max(0,Math.min(1,x)),message=t=>$('status').textContent=t;
+try{
+const x=JSON.parse(localStorage.getItem('airmath-note')||'null');
+if(x){lines=x.lines||[];$('question').value=x.question||$('question').value}
+}catch(e){}
+function persist(){
+try{localStorage.setItem('airmath-note',JSON.stringify({lines,question:$('question').value}))}catch(e){}
+}
+function paint(points){
+if(!points?.length)return;
+ctx.beginPath();ctx.lineWidth=3.2;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#18355c';ctx.fillStyle='#18355c';
+for(let i=0;i<points.length;i++){
+const p=points[i],x=p.x*c.clientWidth,y=p.y*c.clientHeight;
+if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)
+}
+if(points.length===1){
+ctx.arc(points[0].x*c.clientWidth,points[0].y*c.clientHeight,1.6,0,Math.PI*2);ctx.fill()
+}else ctx.stroke()
+}
+function draw(){
+ctx.clearRect(0,0,c.clientWidth,c.clientHeight);
+lines.forEach(paint);paint(touch);paint(air)
+}
+function finish(which){
+const pts=which==='air'?air:touch;
+if(pts?.length)lines.push(pts);
+if(which==='air'){air=null;begin=null;filtered=null}else touch=null;
+draw();persist()
+}
+function resize(){
+const r=c.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);
+c.width=r.width*d;c.height=r.height*d;
+ctx.setTransform(d,0,0,d,0,0);draw()
+}
+function point(e){
+const r=c.getBoundingClientRect();
+return{x:clamp((e.clientX-r.left)/r.width),y:clamp((e.clientY-r.top)/r.height)}
+}
+$('hold').onpointerdown=e=>{
+if(left!==null)return;
+e.preventDefault();left=e.pointerId;
+e.currentTarget.setPointerCapture(left);
+$('hold').classList.add('on');
+$('hold').querySelector('small').textContent='描画OK'
+};
+function stopHold(e){
+if(e.pointerId!==left)return;
+left=null;finish('touch');finish('air');
+$('hold').classList.remove('on');
+$('hold').querySelector('small').textContent='ロック中'
+}
+for(const ev of ['pointerup','pointercancel','lostpointercapture'])
+$('hold').addEventListener(ev,stopHold);
+c.onpointerdown=e=>{
+e.preventDefault();
+if(left===null){anchor=point(e);message('空中筆記の開始位置を移動しました');return}
+if(right!==null)return;
+right=e.pointerId;c.setPointerCapture(right);
+touch=[point(e)];draw()
+};
+c.onpointermove=e=>{
+if(e.pointerId!==right||!touch)return;
+touch.push(point(e));draw()
+};
+for(const ev of ['pointerup','pointercancel','lostpointercapture'])
+c.addEventListener(ev,e=>{
+if(e.pointerId!==right)return;
+right=null;finish('touch')
+});
+$('scale').oninput=e=>$('percent').textContent=e.target.value+'%';
+$('question').onchange=persist;
+$('undo').onclick=()=>{
+finish('touch');finish('air');lines.pop();draw();persist()
+};
+$('clear').onclick=()=>{
+lines=[];touch=air=null;draw();persist()
+};
+$('save').onclick=()=>{
+finish('touch');finish('air');
+const a=document.createElement('a');
+a.download='air-math-note.png';
+a.href=c.toDataURL();a.click()
+};
+function track(result){
+const h=result.landmarks?.[0];
+if(!h){
+if(air)finish('air');
+pinched=false;
+$('dot').style.display='none';
+return
+}
+const tip=h[8],th=h[4];
+const palm=Math.hypot(h[5].x-h[17].x,h[5].y-h[17].y);
+const gap=Math.hypot(tip.x-th.x,tip.y-th.y)/Math.max(.001,palm);
+if(gap<.36)pinched=true;
+else if(gap>.58)pinched=false;
+const drawing=pinched&&left!==null;
+if(!drawing&&air)finish('air');
+if(drawing&&!begin)begin={x:tip.x,y:tip.y,at:{...anchor}};
+const scale=Number($('scale').value)/100;
+const pos=begin?{
+x:clamp(begin.at.x+(begin.x-tip.x)*scale),
+y:clamp(begin.at.y+(tip.y-begin.y)*scale)
+}:anchor;
+filtered=filtered?{
+x:filtered.x*.35+pos.x*.65,
+y:filtered.y*.35+pos.y*.65
+}:pos;
+const dot=$('dot');
+dot.style.display='block';
+dot.style.left=filtered.x*100+'%';
+dot.style.top=filtered.y*100+'%';
+dot.style.background=drawing?'#37c985aa':'transparent';
+if(drawing){
+if(!air)air=[{...filtered}];
+else air.push({...filtered});
+draw()
+}
+}
+function stop(){
+live=false;cancelAnimationFrame(frame);
+if(air)finish('air');
+if(stream)stream.getTracks().forEach(t=>t.stop());
+stream=null;v.srcObject=null;
+try{hand?.close()}catch(e){}
+hand=null;
+$('camera').textContent='インカメ開始';
+$('camera').disabled=false;
+$('dot').style.display='none'
+}
+async function start(){
+if(live){stop();return}
+if(!navigator.mediaDevices?.getUserMedia){
+message('HTTPSのSafariで開いてください');return
+}
+$('camera').disabled=true;
+message('カメラ・手指認識の準備中…');
+try{
+stream=await navigator.mediaDevices.getUserMedia({
+video:{facingMode:'user'},audio:false
+});
+v.srcObject=stream;await v.play();
+const base='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision';
+const mp=await import(base+'/vision_bundle.mjs');
+const files=await mp.FilesetResolver.forVisionTasks(base+'/wasm');
+hand=await mp.HandLandmarker.createFromOptions(files,{
+baseOptions:{
+modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+delegate:'CPU'
+},
+runningMode:'VIDEO',numHands:1
+});
+live=true;$('camera').textContent='カメラ停止';
+message('左指を押さえ、右手の親指と人差し指をつまんで空中に書いてください');
+frame=requestAnimationFrame(loop)
+}catch(e){
+stop();message('カメラ開始エラー：'+(e.message||e.name))
+}finally{$('camera').disabled=false}
+}
+function loop(){
+if(!live)return;
+frame=requestAnimationFrame(loop);
+if(v.readyState<2||v.currentTime===lastVideo)return;
+lastVideo=v.currentTime;
+try{track(hand.detectForVideo(v,performance.now()))}
+catch(e){stop();message('認識エラー：'+e.message)}
+}
+$('camera').onclick=start;
+window.addEventListener('pagehide',stop);
+document.addEventListener('visibilitychange',()=>{
+if(document.hidden&&live)stop()
+});
+new ResizeObserver(resize).observe($('paper'));
+resize();
+</script>
+</html>
